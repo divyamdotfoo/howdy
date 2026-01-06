@@ -11,15 +11,20 @@ import os
 # Load environment variables from .env file
 load_dotenv()
 
+# Configuration constants
 WATCH_FOLDER = Path.home() / "Pictures" / "Photo Booth Library" / "Pictures"
 OUTPUT_FOLDER = Path.home() / "Desktop" / "inglis"
+WHISPER_MODEL = "tiny"
+OPENAI_MODEL = "gpt-4o-mini"
+OPENAI_TEMPERATURE = 0.85
 
-model = whisper.load_model("tiny")
+# Initialize Whisper model
+whisper_model = whisper.load_model(WHISPER_MODEL)
 
 # Initialize OpenAI client with API key from .env
-api_key = os.getenv("OPENAI_API_KEY")
+api_key = os.getenv("AI")
 if not api_key:
-    raise ValueError("OPENAI_API_KEY not found in .env file. Please add OPENAI_API_KEY=your_key_here to your .env file.")
+    raise ValueError("AI key not found in .env file. Please add AI=your_key_here to your .env file.")
 openai_client = OpenAI(api_key=api_key)
 
 
@@ -46,6 +51,10 @@ class Toast:
     @staticmethod
     def transcribing():
         Toast._show("Transcribing", "Creating transcription...", sound="default")
+    
+    @staticmethod
+    def getting_recommendations():
+        Toast._show("Getting Recommendations", "Analyzing with AI...", sound="default")
     
     @staticmethod
     def success():
@@ -137,62 +146,69 @@ def convert_to_mp3(video_path):
 
 
 def transcribe_audio(audio_path):
-    result = model.transcribe(str(audio_path))
+    """Transcribe audio file using Whisper and return transcript text (kept in memory)."""
+    result = whisper_model.transcribe(str(audio_path))
     transcript_text = result['text']
-    
-    txt_path = OUTPUT_FOLDER / f"{audio_path.stem}.txt"
-    with open(txt_path, 'w', encoding='utf-8') as f:
-        f.write(transcript_text)
-    print(f"Transcription saved: {txt_path.name}")
-    
+    print(f"Transcription complete: {audio_path.stem}")
     return transcript_text
 
 
 def get_openai_recommendations(transcript):
-    """Send transcript to OpenAI for recommendations and analysis."""
+    """Send transcript to OpenAI to generate a markdown table with original vs improved speech."""
+    system_prompt = """You are a language improvement assistant. Your task is to analyze speech transcripts and create a markdown table showing how the user can improve their speech.
+
+CRITICAL INSTRUCTIONS:
+1. You MUST respond ONLY with a markdown table - nothing else, no explanations, no additional text
+2. The table must have two columns: "Original" (left) and "Improved" (right)
+3. Break down the transcript into meaningful phrases or sentences
+4. In the "Improved" column, provide better word choices and correct grammar
+5. Keep the improvement level moderate - don't make it too advanced, just show natural improvements
+6. Maintain the same meaning and tone, just improve clarity and correctness
+7. Use proper markdown table format with headers
+
+Example format:
+| Original | Improved |
+|----------|----------|
+| user's original phrase | improved version |
+| another phrase | another improved version |"""
+
+    user_prompt = f"""Analyze this transcript and create a markdown table with original speech on the left and improved speech on the right. Only return the table, nothing else.
+
+Transcript:
+{transcript}"""
+
     try:
         response = openai_client.chat.completions.create(
-            model="gpt-4o-mini",
+            model=OPENAI_MODEL,
             messages=[
-                {
-                    "role": "system",
-                    "content": "You are a helpful assistant that analyzes transcripts and provides recommendations, insights, and suggestions. Format your response in a clear, organized manner with sections."
-                },
-                {
-                    "role": "user",
-                    "content": f"Please analyze this transcript and provide recommendations, key insights, and any suggestions:\n\n{transcript}"
-                }
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
             ],
-            temperature=0.7,
+            temperature=OPENAI_TEMPERATURE,
         )
-        return response.choices[0].message.content
+        return response.choices[0].message.content.strip()
     except Exception as e:
         raise Exception(f"OpenAI API error: {str(e)}")
 
 
 def save_recommendations(audio_path, transcript, recommendations):
-    """Save recommendations in a clean, organized text file."""
-    recommendations_path = OUTPUT_FOLDER / f"{audio_path.stem}_recommendations.txt"
+    """Save transcript and recommendations as a single markdown file."""
+    output_path = OUTPUT_FOLDER / f"{audio_path.stem}.md"
     
-    with open(recommendations_path, 'w', encoding='utf-8') as f:
-        f.write("=" * 80 + "\n")
-        f.write(f"RECOMMENDATIONS & ANALYSIS\n")
-        f.write(f"File: {audio_path.stem}\n")
-        f.write("=" * 80 + "\n\n")
+    with open(output_path, 'w', encoding='utf-8') as f:
+        f.write(f"# Speech Improvement Analysis\n\n")
+        f.write(f"**File:** `{audio_path.stem}`\n\n")
         
-        f.write("TRANSCRIPT:\n")
-        f.write("-" * 80 + "\n")
-        f.write(transcript)
-        f.write("\n\n")
+        f.write("## Original Transcript\n\n")
+        f.write(f"{transcript}\n\n")
         
-        f.write("=" * 80 + "\n\n")
+        f.write("---\n\n")
         
-        f.write("RECOMMENDATIONS:\n")
-        f.write("-" * 80 + "\n")
+        f.write("## Improvement Suggestions\n\n")
         f.write(recommendations)
         f.write("\n")
         
-    print(f"Recommendations saved: {recommendations_path.name}")
+    print(f"Analysis saved: {output_path.name}")
 
 
 def process_video(video_path):
@@ -200,6 +216,7 @@ def process_video(video_path):
         mp3_path = convert_to_mp3(video_path)
         transcript = transcribe_audio(mp3_path)
         
+        Toast.getting_recommendations()
         print("Getting recommendations from OpenAI...")
         recommendations = get_openai_recommendations(transcript)
         save_recommendations(mp3_path, transcript, recommendations)
