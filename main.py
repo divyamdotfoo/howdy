@@ -3,12 +3,24 @@ import subprocess
 from pathlib import Path
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
+from openai import OpenAI
 import whisper
+from dotenv import load_dotenv
+import os
+
+# Load environment variables from .env file
+load_dotenv()
 
 WATCH_FOLDER = Path.home() / "Pictures" / "Photo Booth Library" / "Pictures"
 OUTPUT_FOLDER = Path.home() / "Desktop" / "inglis"
 
-model=whisper.load_model("tiny")
+model = whisper.load_model("tiny")
+
+# Initialize OpenAI client with API key from .env
+api_key = os.getenv("OPENAI_API_KEY")
+if not api_key:
+    raise ValueError("OPENAI_API_KEY not found in .env file. Please add OPENAI_API_KEY=your_key_here to your .env file.")
+openai_client = OpenAI(api_key=api_key)
 
 
 class Toast:
@@ -125,18 +137,73 @@ def convert_to_mp3(video_path):
 
 
 def transcribe_audio(audio_path):
-   result=model.transcribe(str(audio_path))
-   txt_path = OUTPUT_FOLDER / f"{audio_path.stem}.txt"
-   with open(txt_path, 'w', encoding='utf-8') as f:
-       f.write(result['text'])
-   print(f"Transcription saved: {txt_path.name}")
-   
+    result = model.transcribe(str(audio_path))
+    transcript_text = result['text']
+    
+    txt_path = OUTPUT_FOLDER / f"{audio_path.stem}.txt"
+    with open(txt_path, 'w', encoding='utf-8') as f:
+        f.write(transcript_text)
+    print(f"Transcription saved: {txt_path.name}")
+    
+    return transcript_text
+
+
+def get_openai_recommendations(transcript):
+    """Send transcript to OpenAI for recommendations and analysis."""
+    try:
+        response = openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are a helpful assistant that analyzes transcripts and provides recommendations, insights, and suggestions. Format your response in a clear, organized manner with sections."
+                },
+                {
+                    "role": "user",
+                    "content": f"Please analyze this transcript and provide recommendations, key insights, and any suggestions:\n\n{transcript}"
+                }
+            ],
+            temperature=0.7,
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        raise Exception(f"OpenAI API error: {str(e)}")
+
+
+def save_recommendations(audio_path, transcript, recommendations):
+    """Save recommendations in a clean, organized text file."""
+    recommendations_path = OUTPUT_FOLDER / f"{audio_path.stem}_recommendations.txt"
+    
+    with open(recommendations_path, 'w', encoding='utf-8') as f:
+        f.write("=" * 80 + "\n")
+        f.write(f"RECOMMENDATIONS & ANALYSIS\n")
+        f.write(f"File: {audio_path.stem}\n")
+        f.write("=" * 80 + "\n\n")
+        
+        f.write("TRANSCRIPT:\n")
+        f.write("-" * 80 + "\n")
+        f.write(transcript)
+        f.write("\n\n")
+        
+        f.write("=" * 80 + "\n\n")
+        
+        f.write("RECOMMENDATIONS:\n")
+        f.write("-" * 80 + "\n")
+        f.write(recommendations)
+        f.write("\n")
+        
+    print(f"Recommendations saved: {recommendations_path.name}")
 
 
 def process_video(video_path):
     try:
         mp3_path = convert_to_mp3(video_path)
-        transcribe_audio(mp3_path)
+        transcript = transcribe_audio(mp3_path)
+        
+        print("Getting recommendations from OpenAI...")
+        recommendations = get_openai_recommendations(transcript)
+        save_recommendations(mp3_path, transcript, recommendations)
+        
         Toast.success()
     except Exception as e:
         Toast.error(str(e))
